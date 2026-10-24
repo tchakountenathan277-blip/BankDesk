@@ -1,0 +1,23 @@
+### Tests de l'API dans Visual Studio (cliquez sur "Envoyer la requête" au-dessus de chaque bloc).
+@hote = http://localhost:5080
+
+### 1. Le serveur tourne-t-il ?
+GET {{hote}}/api/sante
+
+### 2. Connexion client : copiez le "jeton" de la réponse dans la variable ci-dessous
+POST {{hote}}/api/auth/connexion
+Content-Type: application/json
+
+{ "contact": "pierre@bankdesk.com", "motDePasse": "1234" }
+
+### 3. Mes requêtes
+@jeton = COLLEZ_LE_JETON_ICI
+GET {{hote}}/api/requetes
+Authorization: Bearer {{jeton}}
+
+### 4. Créer une requête
+POST {{hote}}/api/requetes
+Authorization: Bearer {{jeton}}
+Content-Type: application/json
+
+{ "type": "Chéquier", "objet": "Test", "description": "Requête de test" }

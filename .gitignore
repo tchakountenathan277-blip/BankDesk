@@ -9,3 +9,11 @@ obj/
 
 # OS-generated files
 .DS_Store
+
+# Serveur BankDesk.Api
+BankDesk.Api/bin/
+BankDesk.Api/obj/
+*.db
+*.db-shm
+*.db-wal
+uploads/

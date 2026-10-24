@@ -8,10 +8,8 @@ public static class UI
         Line = Color.FromArgb("#E3E8EF"), Mute = Color.FromArgb("#6B7A90"), Red = Color.FromArgb("#C0392B");
     public static readonly Dictionary<string, (string Bg, string Fg)> Status = new()
     {
-        ["Reçue"] = ("#E3E9F3", "#34476B"),
-        ["En cours"] = ("#FDEBC8", "#8A5A00"),
-        ["Résolue"] = ("#D5EFE0", "#1E6B3F"),
-        ["Rejetée"] = ("#FADBD8", "#A3261C"),
+        ["Reçue"] = ("#E3E9F3", "#34476B"), ["En cours"] = ("#FDEBC8", "#8A5A00"),
+        ["Résolue"] = ("#D5EFE0", "#1E6B3F"), ["Rejetée"] = ("#FADBD8", "#A3261C"),
     };
     public static readonly Dictionary<string, string> Icons = new()
     { ["Réclamation"] = "⚠️", ["Chéquier"] = "📖", ["Carte"] = "💳", ["Crédit"] = "🏛️", ["Autre"] = "📄" };
@@ -23,13 +21,8 @@ public static class UI
 
     public static Border Box(View v, Color? stroke = null, Thickness? pad = null, double r = 14, Color? fill = null, double sw = 1) => new()
     {
-        Content = v,
-        Padding = pad ?? new Thickness(14),
-        BackgroundColor = fill ?? Colors.White,
-        Stroke = stroke ?? Line,
-        StrokeThickness = sw,
-        StrokeShape = new RoundRectangle { CornerRadius = r },
-        Margin = new Thickness(0, 0, 0, 12)
+        Content = v, Padding = pad ?? new Thickness(14), BackgroundColor = fill ?? Colors.White, Stroke = stroke ?? Line,
+        StrokeThickness = sw, StrokeShape = new RoundRectangle { CornerRadius = r }, Margin = new Thickness(0, 0, 0, 12)
     };
 
     public static Border Badge(string status, string? text = null)
@@ -41,36 +34,15 @@ public static class UI
 
     public static Button Btn(string text, Action tap, bool outline = false)
     {
-        var b = new Button
-        {
-            Text = text,
-            CornerRadius = 12,
-            HeightRequest = 50,
-            FontAttributes = FontAttributes.Bold,
-            FontSize = 16,
-            BackgroundColor = outline ? Colors.White : Teal,
-            TextColor = outline ? Teal : Colors.White,
-            BorderColor = Teal,
-            BorderWidth = 1
-        };
+        var b = new Button { Text = text, CornerRadius = 12, HeightRequest = 50, FontAttributes = FontAttributes.Bold, FontSize = 16,
+            BackgroundColor = outline ? Colors.White : Teal, TextColor = outline ? Teal : Colors.White, BorderColor = Teal, BorderWidth = 1 };
         b.Clicked += (_, _) => tap(); return b;
     }
 
     public static Button Chip(string text, bool on, Action tap)
     {
-        var b = new Button
-        {
-            Text = text,
-            CornerRadius = 20,
-            HeightRequest = 38,
-            Padding = new Thickness(16, 0),
-            FontSize = 14,
-            Margin = new Thickness(0, 0, 8, 8),
-            BackgroundColor = on ? Teal : Colors.White,
-            TextColor = on ? Colors.White : Mute,
-            BorderColor = on ? Teal : Line,
-            BorderWidth = 1
-        };
+        var b = new Button { Text = text, CornerRadius = 20, HeightRequest = 38, Padding = new Thickness(16, 0), FontSize = 14, Margin = new Thickness(0, 0, 8, 8),
+            BackgroundColor = on ? Teal : Colors.White, TextColor = on ? Colors.White : Mute, BorderColor = on ? Teal : Line, BorderWidth = 1 };
         b.Clicked += (_, _) => tap(); return b;
     }
 
@@ -86,13 +58,8 @@ public static class UI
     {
         var s = new VerticalStackLayout { Children = { L(title, 24, true, Colors.White) } };
         if (sub != null) s.Add(L(sub, 14, false, Color.FromArgb("#B8C4D6")));
-        var g = new Grid
-        {
-            BackgroundColor = Navy,
-            Padding = new Thickness(20, 50, 20, 18),
-            ColumnSpacing = 14,
-            ColumnDefinitions = { new(GridLength.Auto), new(GridLength.Star) }
-        };
+        var g = new Grid { BackgroundColor = Navy, Padding = new Thickness(20, 50, 20, 18), ColumnSpacing = 14,
+            ColumnDefinitions = { new(GridLength.Auto), new(GridLength.Star) } };
         if (back != null) { var bl = L("←", 26, true, Colors.White); bl.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(back) }); g.Add(bl, 0); }
         g.Add(s, 1); return g;
     }
@@ -107,11 +74,12 @@ public static class UI
             var (k, t, ic) = items[i]; bool on = k == active;
             var lbl = L(t, 12, on, on ? Teal : Mute); lbl.HorizontalOptions = LayoutOptions.Center;
             var s = new VerticalStackLayout { Children = { new Label { Text = ic, FontSize = 22, HorizontalOptions = LayoutOptions.Center }, lbl } };
-            if (k == "req") s.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => Nav.Go(Store.Role == "advisor" ? new QueuePage() : new MyRequestsPage())) });
-            // AJOUT : onglet Messages -> liste des conversations
-            if (k == "msg") s.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => Nav.Go(new MessagesPage())) });
-            // AJOUT : onglet Profil -> informations de l'utilisateur et déconnexion
-            if (k == "pro") s.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => Nav.Go(new ProfilePage())) });
+            if (!on) s.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() =>
+            {
+                if (k == "req") Nav.Go(Store.Role == "advisor" ? new QueuePage() : new MyRequestsPage());
+                else if (k == "msg") Nav.Go(new MessagesPage());
+                else Nav.Go(new ProfilePage());
+            }) });
             g.Add(s, i);
         }
         return g;
@@ -127,6 +95,15 @@ public static class Nav
 public abstract class Pg : ContentPage
 {
     protected Pg() { NavigationPage.SetHasNavigationBar(this, false); BackgroundColor = UI.Bg; }
+
+    // À chaque affichage : on recharge les données depuis le serveur, puis la page se redessine (Reload).
+    protected override async void OnAppearing()
+    {
+        base.OnAppearing();
+        if (!Store.LoggedIn) return;
+        try { await Store.LoadAsync(); Reload(); } catch (ApiException) { /* serveur éteint : on garde les données déjà affichées */ }
+    }
+    protected virtual void Reload() { }
     protected void Build(View? header, View body, View? footer = null, bool scroll = true)
     {
         var g = new Grid { RowDefinitions = { new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto) } };

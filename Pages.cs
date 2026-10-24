@@ -9,7 +9,11 @@ public class LoginPage : Pg
     {
         var id = Field("Téléphone ou e-mail", "Votre téléphone ou e-mail", out var eId);
         var pw = Field("Mot de passe", "Saisissez votre mot de passe", out var ePw, true, "🔒");
-        void Enter(string role) { Store.Role = role; Nav.Go(role == "advisor" ? new QueuePage() : new MyRequestsPage()); }
+        async Task Enter(UserDto u)
+        {
+            Store.SetUser(u); await Store.LoadAsync();
+            Nav.Go(Store.Role == "advisor" ? new QueuePage() : new MyRequestsPage());
+        }
         var forgot = L("Mot de passe oublié ?", 14, true, Teal); forgot.HorizontalOptions = LayoutOptions.End; forgot.Margin = new Thickness(0, 0, 0, 14);
         var create = L("Créer un compte", 16, true, Teal); create.HorizontalOptions = LayoutOptions.Center;
         create.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => Nav.Go(new RegisterPage())) });
@@ -17,12 +21,20 @@ public class LoginPage : Pg
         {
             Padding = new Thickness(24, 60, 24, 24), Spacing = 4,
             Children = { Logo("Vos demandes bancaires, sans file d'attente"), id, pw, forgot,
-                Btn("Se connecter", () => {
-                    if (string.IsNullOrWhiteSpace(eId.Text) || (ePw.Text?.Length ?? 0) < 4) { DisplayAlert("Connexion", "Identifiant et mot de passe (4 car. min) requis.", "OK"); return; }
-                    Enter(eId.Text.ToLower().Contains("conseiller") ? "advisor" : "client"); }),
+                Btn("Se connecter", async () => {
+                    if (string.IsNullOrWhiteSpace(eId.Text) || string.IsNullOrEmpty(ePw.Text)) { await DisplayAlert("Connexion", "Identifiant et mot de passe requis.", "OK"); return; }
+                    try { await Enter(await Api.LoginAsync(eId.Text.Trim(), ePw.Text)); }
+                    catch (ApiException ex) { await DisplayAlert("Connexion", ex.Message, "OK"); } }),
                 new BoxView { HeightRequest = 8, Color = Colors.Transparent },
-                Btn("🖐  Connexion par empreinte", () => Enter("client"), true),
-                L("Démo : un identifiant contenant « conseiller » ouvre l'espace conseiller", 12, false, Mute),
+                Btn("🖐  Connexion par empreinte", async () => {
+                    try
+                    {
+                        var u = await Api.RestoreAsync();
+                        if (u == null) { await DisplayAlert("Empreinte", "Connectez-vous d'abord avec votre mot de passe : l'empreinte réutilise votre dernière session.", "OK"); return; }
+                        await Enter(u);
+                    }
+                    catch (ApiException ex) { await DisplayAlert("Empreinte", ex.Message, "OK"); } }, true),
+                L("Comptes de démonstration (mot de passe 1234) : pierre@bankdesk.com (client) · etoa@bankdesk.com (conseiller)", 12, false, Mute),
                 new BoxView { HeightRequest = 30, Color = Colors.Transparent }, create, Secure() }
         });
     }
@@ -56,6 +68,8 @@ public class RegisterPage : Pg
                     if (string.IsNullOrWhiteSpace(eN.Text) || string.IsNullOrWhiteSpace(eP.Text) || string.IsNullOrWhiteSpace(eI.Text)) { await DisplayAlert("Champs requis", "Renseignez tous les champs.", "OK"); return; }
                     if ((e1.Text?.Length ?? 0) < 8) { await DisplayAlert("Mot de passe", "8 caractères minimum.", "OK"); return; }
                     if (e1.Text != e2.Text) { await DisplayAlert("Mot de passe", "Les mots de passe ne correspondent pas.", "OK"); return; }
+                    try { await Api.RegisterAsync(eN.Text.Trim(), eP.Text.Trim(), eI.Text.Trim(), e1.Text!); }
+                    catch (ApiException ex) { await DisplayAlert("Inscription", ex.Message, "OK"); return; }
                     await DisplayAlert("Compte créé", "Vous pouvez vous connecter.", "OK"); Nav.Go(new LoginPage()); }),
                 login, LoginPage.Secure() }
         });
@@ -97,6 +111,7 @@ public class MyRequestsPage : Pg
         var body = new VerticalStackLayout { Children = { new VerticalStackLayout { Padding = new Thickness(16, 14, 16, 0), Children = { chips } }, list, fab } };
         Build(head, body, Tabs("req")); Refresh();
     }
+    protected override void Reload() => Refresh();
     void Refresh()
     {
         chips.Clear();
@@ -111,7 +126,7 @@ public class MyRequestsPage : Pg
 // ───────────── Nouvelle requête ─────────────
 public class NewRequestPage : Pg
 {
-    string type = "Chéquier"; readonly List<(string, string)> files = new();
+    string type = "Chéquier"; readonly List<(string, string)> files = new(); readonly List<FileResult> picked = new();
     readonly FlexLayout chips = new() { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap }; readonly VerticalStackLayout fileBox = new();
     readonly Label count = L("0 fichier", 14, false, Mute);
     public NewRequestPage()
@@ -123,7 +138,7 @@ public class NewRequestPage : Pg
             if (f == null) return;
             using var s = await f.OpenReadAsync(); double mb = s.Length / 1048576.0;
             if (mb > 10) { await DisplayAlert("Fichier trop lourd", "10 Mo maximum par fichier.", "OK"); return; }
-            files.Add((f.FileName, $"{Path.GetExtension(f.FileName).TrimStart('.').ToUpper()} · {mb:0.0} Mo")); RefreshFiles();
+            files.Add((f.FileName, $"{Path.GetExtension(f.FileName).TrimStart('.').ToUpper()} · {mb:0.0} Mo")); picked.Add(f); RefreshFiles();
         }
         var photo = Btn("+ Photo", async () => await Add(await MediaPicker.Default.PickPhotoAsync()), true);
         var file = Btn("+ Fichier", async () => await Add(await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "JPG, PNG ou PDF" })), true);
@@ -131,10 +146,20 @@ public class NewRequestPage : Pg
         var head = new Grid { ColumnDefinitions = { new(GridLength.Star), new(GridLength.Auto) } }; head.Add(L("Pièces jointes", 15, true), 0); head.Add(count, 1);
         var send = Btn("Envoyer la requête", async () => {
             if (string.IsNullOrWhiteSpace(eObj.Text) || string.IsNullOrWhiteSpace(desc.Text)) { await DisplayAlert("Champs requis", "Renseignez l'objet et la description.", "OK"); return; }
-            var est = type switch { "Carte" or "Autre" => "3 jours ouvrés", "Crédit" => "5 jours ouvrés", _ => "2 jours ouvrés" };
-            var r = new Req { Id = $"REQ-{43 + Store.Reqs.Count - 7:0000}", Client = Store.Me, Type = type, Title = eObj.Text, Desc = desc.Text, Date = DateTime.Now.ToString("dd/MM/yyyy"), Hours = 48, Est = est };
-            r.Files.AddRange(files); r.History.Add(new Hist(Store.Now(), "Requête reçue", "Votre demande a bien été enregistrée."));
-            Store.Reqs.Insert(0, r); Nav.Go(new MyRequestsPage()); });
+            try
+            {
+                var created = await Api.CreateRequestAsync(type, eObj.Text.Trim(), desc.Text.Trim());
+                var failed = new List<string>();
+                for (int i = 0; i < picked.Count; i++)
+                {
+                    try { await Api.UploadAsync(created.Reference, picked[i]); }
+                    catch (ApiException ex) { failed.Add($"{picked[i].FileName} : {ex.Message}"); }
+                }
+                if (failed.Count > 0) await DisplayAlert("Pièces jointes", "Requête créée, mais certains fichiers n'ont pas été envoyés :\n" + string.Join("\n", failed), "OK");
+                await Store.LoadAsync();
+                Nav.Go(new MyRequestsPage());
+            }
+            catch (ApiException ex) { await DisplayAlert("Envoi impossible", ex.Message, "OK"); } });
         RefreshChips();
         Build(Header("Nouvelle requête", null, () => Nav.Go(new MyRequestsPage())), new VerticalStackLayout
         {
@@ -151,7 +176,7 @@ public class NewRequestPage : Pg
         {
             var g = new Grid { ColumnDefinitions = { new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto) }, ColumnSpacing = 12 };
             g.Add(new Label { Text = "🖼️", FontSize = 22 }, 0); g.Add(new VerticalStackLayout { Children = { L(n, 15, true), L(s, 12, false, Mute) } }, 1);
-            var x = L("✕", 18, false, Mute); x.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => { files.Remove((n, s)); RefreshFiles(); }) }); g.Add(x, 2);
+            var x = L("✕", 18, false, Mute); x.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => { int k = files.IndexOf((n, s)); if (k >= 0) { files.RemoveAt(k); picked.RemoveAt(k); } RefreshFiles(); }) }); g.Add(x, 2);
             fileBox.Add(Box(g, pad: new Thickness(12, 8)));
         }
     }
@@ -200,23 +225,53 @@ public class TrackingPage : Pg
 // ───────────── Messagerie ─────────────
 public class ChatPage : Pg
 {
-    readonly Req r; readonly VerticalStackLayout box = new() { Padding = 16, Spacing = 12 }; readonly ScrollView sv = new();
+    readonly Req r; readonly string me; readonly VerticalStackLayout box = new() { Padding = 16, Spacing = 12 }; readonly ScrollView sv = new();
+    int shown = -1;     // nombre de messages déjà affichés (pour ne redessiner que s'il y a du nouveau)
     public ChatPage(Req req)
     {
-        r = req; bool adv = Store.Role == "advisor"; string me = adv ? Store.Advisor : Store.Me;
+        r = req; bool adv = Store.Role == "advisor"; me = adv ? Store.Advisor : Store.Me;
         var bar = new HorizontalStackLayout { Padding = 14, Spacing = 10, Children = { Badge(r.Status), L("Délai estimé : " + r.Est, 14, false, Mute) } };
-        var field = Field("", "Votre message…", out var e, false, "✏️"); 
-        void Send() { if (string.IsNullOrWhiteSpace(e.Text)) return; if (!Store.Msgs.ContainsKey(r.Id)) Store.Msgs[r.Id] = new(); Store.Msgs[r.Id].Add(new Msg(me, Store.Now(), e.Text.Trim())); e.Text = ""; Draw(me); }
+        var field = Field("", "Votre message…", out var e, false, "✏️");
+        async Task Send()
+        {
+            if (string.IsNullOrWhiteSpace(e.Text)) return;
+            try
+            {
+                await Api.SendMessageAsync(r.Id, e.Text.Trim()); e.Text = "";
+                await Store.LoadMessagesAsync(r.Id); Draw();
+            }
+            catch (ApiException ex) { await DisplayAlert("Message", ex.Message, "OK"); }
+        }
         sv.Content = box;
-        var foot = new VerticalStackLayout { Padding = 16, Spacing = 8, Children = { field, Btn("💬  Envoyer", Send) } };
+        var foot = new VerticalStackLayout { Padding = 16, Spacing = 8, Children = { field, Btn("💬  Envoyer", async () => await Send()) } };
         var g = new Grid { RowDefinitions = { new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto) } };
         g.Add(Header(adv ? r.Client : $"{Store.Advisor}, conseiller", $"{r.Id} · {r.Title}", () => Nav.Go(adv ? new ProcessPage(r) : new TrackingPage(r))), 0, 0);
-        g.Add(bar, 0, 1); g.Add(sv, 0, 2); g.Add(foot, 0, 3); Content = g; Draw(me);
+        g.Add(bar, 0, 1); g.Add(sv, 0, 2); g.Add(foot, 0, 3); Content = g; Draw();
     }
-    async void Draw(string me)
+    protected override async void OnAppearing()
     {
+        base.OnAppearing();
+        try { await Api.MarkReadAsync(r.Id); await Store.LoadMessagesAsync(r.Id); Draw(); } catch (ApiException) { }
+        // Actualisation automatique toutes les 5 secondes tant que la page est affichée.
+        Dispatcher.StartTimer(TimeSpan.FromSeconds(5), () =>
+        {
+            if (Handler == null || !Store.LoggedIn) return false;
+            _ = Poll();
+            return true;
+        });
+    }
+    async Task Poll()
+    {
+        try { await Store.LoadMessagesAsync(r.Id); Draw(); } catch (ApiException) { }
+    }
+    protected override void Reload() { }
+    async void Draw()
+    {
+        var list = Store.Msgs.GetValueOrDefault(r.Id) ?? new();
+        if (list.Count == shown) return;
+        shown = list.Count;
         box.Clear();
-        foreach (var m in Store.Msgs.GetValueOrDefault(r.Id) ?? new())
+        foreach (var m in list)
         {
             bool mine = m.From == me;
             var meta = L($"{m.From} · {m.At}{(mine && m.Read ? " · Lu" : "")}", 12, false, mine ? Color.FromArgb("#D6F0F0") : Mute); meta.HorizontalTextAlignment = TextAlignment.End;
@@ -236,6 +291,7 @@ public class QueuePage : Pg
     {
         Build(Header("Requêtes à traiter", $"Bonjour, {Store.Advisor}"), new VerticalStackLayout { Padding = 16, Children = { chips, list } }, Tabs("req")); Refresh();
     }
+    protected override void Reload() => Refresh();
     void Refresh()
     {
         var all = Store.Reqs; var nw = all.Where(r => r.Status == "Reçue").ToList(); var cur = all.Where(r => r.Status == "En cours").ToList(); var late = all.Where(r => r.Late).ToList();
@@ -258,12 +314,17 @@ public class ProcessPage : Pg
         var det = new VerticalStackLayout { Spacing = 8, Children = { L("Description et pièce jointe", 17, true), L(r.Desc, 16) } };
         foreach (var (n, s) in r.Files) det.Add(Box(new HorizontalStackLayout { Spacing = 12, Children = { new Label { Text = "🖼️", FontSize = 22 }, new VerticalStackLayout { Children = { L(n, 15, true), L(s, 12, false, Mute) } } } }, pad: new Thickness(12, 8)));
         var reply = new Editor { HeightRequest = 120, Placeholder = "Votre réponse au client…", TextColor = Navy, PlaceholderColor = Mute };
-        void Apply(string st) { r.Status = st; r.History.Insert(0, new Hist(Store.Now(), st, string.IsNullOrWhiteSpace(reply.Text) ? $"Statut mis à jour : {st}." : reply.Text.Trim()));
-            if (!string.IsNullOrWhiteSpace(reply.Text)) { if (!Store.Msgs.ContainsKey(r.Id)) Store.Msgs[r.Id] = new(); Store.Msgs[r.Id].Add(new Msg(Store.Advisor, Store.Now(), reply.Text.Trim())); }
-            Nav.Go(new QueuePage()); }
+        async Task Apply(string st)
+        {
+            var txt = reply.Text?.Trim();
+            if (st == "Rejetée" && string.IsNullOrWhiteSpace(txt)) { await DisplayAlert("Rejet", "Indiquez le motif du rejet dans « Réponse au client ».", "OK"); return; }
+            if (st == r.Status && string.IsNullOrWhiteSpace(txt)) { await DisplayAlert("Traitement", "Aucun changement : choisissez un autre statut ou écrivez une réponse.", "OK"); return; }
+            try { await Api.ChangeStatusAsync(r.Id, st, txt); await Store.LoadAsync(); Nav.Go(new QueuePage()); }
+            catch (ApiException ex) { await DisplayAlert("Traitement", ex.Message, "OK"); }
+        }
         var btns = new Grid { ColumnDefinitions = { new(GridLength.Star), new(new GridLength(1.3, GridUnitType.Star)) }, ColumnSpacing = 12 };
-        btns.Add(Btn("Rejeter", () => Apply("Rejetée"), true), 0);
-        btns.Add(Btn("Marquer résolue", () => Apply(sel is "Reçue" or "En cours" ? sel : "Résolue")), 1);
+        btns.Add(Btn("Rejeter", async () => await Apply("Rejetée"), true), 0);
+        btns.Add(Btn("Marquer résolue", async () => await Apply(sel is "Reçue" or "En cours" ? sel : "Résolue")), 1);
         void Chips() { chips.Clear(); foreach (var s in new[] { "Reçue", "En cours", "Résolue", "Rejetée" }) { var b = Badge(s, $"  {s}  "); b.Margin = new Thickness(0, 0, 8, 8); b.Opacity = s == sel ? 1 : .55; b.Stroke = s == sel ? Navy : Colors.Transparent; b.StrokeThickness = 2;
             b.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => { sel = s; Chips(); }) }); chips.Add(b); } }
         Chips();

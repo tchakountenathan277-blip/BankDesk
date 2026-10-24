@@ -12,36 +12,69 @@ public class Req
     public bool Late => Hours < 0 && Status is "Reçue" or "En cours" && Hours < 0;
 }
 
-// Données simulées : à remplacer plus tard par les appels à l'API (HttpClient).
+// Données de l'application : désormais LUES depuis le serveur (voir Api.cs) puis gardées en mémoire (cache).
+// Les pages continuent de lire Store.Reqs / Store.Msgs comme avant ; ce sont les modifications qui passent par l'API.
 public static class Store
 {
-    public const string Me = "Pierre Nathan", Advisor = "M. Etoa";
-    public static string Role = "client";
+    public static string Me = "";                       // nom du client connecté (était une constante en mode simulation)
+    public static string Advisor = "M. Etoa";           // nom du conseiller (le sien s'il est connecté)
+    public static string Role = "client";               // "client" ou "advisor"
+    public static bool LoggedIn => Api.Token != null;
     public static string Now() => DateTime.Now.ToString("dd/MM HH:mm");
-    static Hist Rec(string d) => new(d, "Requête reçue", "Votre demande a bien été enregistrée.");
 
-    public static List<Req> Reqs = new()
-    {
-        new Req { Id="REQ-0042", Client=Me, Type="Chéquier", Title="Demande de chéquier", Date="03/10/2026", Status="En cours", Hours=28, Est="2 jours ouvrés",
-            Desc="Bonjour, je souhaite commander un nouveau chéquier de 25 chèques, à retirer dans mon agence habituelle. Merci.",
-            Files={("CNI.jpg","JPG · 1,2 Mo")},
-            History={ new("05/10 14:20","En cours","Votre chéquier est en préparation."), new("04/10 09:05","Prise en charge","Dossier vérifié par votre conseiller."), Rec("03/10 17:42") } },
-        new Req { Id="REQ-0041", Client="Amina Benali", Type="Réclamation", Title="Réclamation virement", Date="03/10/2026", Status="En cours", Hours=-3, Est="2 jours ouvrés", Desc="Un virement n'a pas été crédité.", History={ Rec("03/10 10:00") } },
-        new Req { Id="REQ-0040", Client="Lucas Fontaine", Type="Carte", Title="Remplacement de carte", Date="02/10/2026", Hours=40, Est="3 jours ouvrés", Desc="Ma carte est endommagée.", History={ Rec("02/10 11:15") } },
-        new Req { Id="REQ-0039", Client=Me, Type="Réclamation", Title="Réclamation prélèvement", Date="02/10/2026", Hours=30, Est="2 jours ouvrés", Desc="Prélèvement non autorisé.", History={ Rec("02/10 16:00") } },
-        new Req { Id="REQ-0038", Client="Marie Dupont", Type="Crédit", Title="Demande de crédit", Date="01/10/2026", Hours=90, Est="5 jours ouvrés", Desc="Crédit consommation.", History={ Rec("01/10 09:30") } },
-        new Req { Id="REQ-0031", Client=Me, Type="Carte", Title="Remplacement de carte", Date="28/09/2026", Status="Résolue", Est="3 jours ouvrés", Desc="Carte perdue.", History={ new("30/09 15:00","Résolue","Votre nouvelle carte est disponible."), Rec("28/09 10:00") } },
-        new Req { Id="REQ-0027", Client=Me, Type="Crédit", Title="Demande de crédit", Date="24/09/2026", Status="Rejetée", Est="5 jours ouvrés", Desc="Crédit immobilier.", History={ new("26/09 11:00","Rejetée","Dossier incomplet."), Rec("24/09 08:50") } },
-    };
+    public static List<Req> Reqs = new();
+    public static Dictionary<string, List<Msg>> Msgs = new();
 
-    public static Dictionary<string, List<Msg>> Msgs = new()
+    /// <summary>Mémorise qui vient de se connecter (appelé après une connexion réussie).</summary>
+    public static void SetUser(UserDto u)
     {
-        ["REQ-0042"] = new()
+        Reqs = new(); Msgs = new();
+        if (u.Role == "conseiller") { Role = "advisor"; Advisor = u.NomComplet; }
+        else { Role = "client"; Me = u.NomComplet; Advisor = "M. Etoa"; }
+    }
+
+    /// <summary>Recharge toutes les requêtes (et leurs messages) depuis le serveur.</summary>
+    public static async Task LoadAsync()
+    {
+        var liste = await Api.GetRequestsAsync();
+        var reqs = new List<Req>(); var msgs = new Dictionary<string, List<Msg>>();
+        foreach (var d in liste)
         {
-            new(Advisor,"04/10 09:05","Bonjour Monsieur Nathan, votre demande est prise en charge. Le délai estimé est de 2 jours ouvrés."),
-            new(Me,"04/10 09:18","Merci. Je le retirerai à mon agence habituelle.", true),
-            new(Advisor,"05/10 14:20","Votre chéquier est en préparation. Il reste 1 j 4 h de traitement. Je vous préviendrai dès sa disponibilité."),
-            new(Me,"05/10 14:26","Très bien, merci pour votre suivi.", true),
+            reqs.Add(VersReq(d));
+            if (d.Messages.Count > 0) msgs[d.Reference] = d.Messages.Select(m => VersMsg(m)).ToList();
         }
-    };
+        Reqs = reqs; Msgs = msgs;
+    }
+
+    /// <summary>Recharge uniquement les messages d'une requête (rafraîchissement léger de la messagerie).</summary>
+    public static async Task LoadMessagesAsync(string reference)
+    {
+        var ms = await Api.GetMessagesAsync(reference);
+        if (ms.Count > 0) Msgs[reference] = ms.Select(m => VersMsg(m)).ToList(); else Msgs.Remove(reference);
+    }
+
+    /// <summary>Déconnexion : on oublie les données de l'utilisateur.</summary>
+    public static void Clear() { Reqs = new(); Msgs = new(); Me = ""; Advisor = "M. Etoa"; Role = "client"; }
+
+    // ---- Conversions : formes du serveur (DTO) -> formes utilisées par les pages ----
+
+    static Req VersReq(ReqDto d)
+    {
+        var r = new Req
+        {
+            Id = d.Reference, Client = d.Client, Type = d.Type, Title = d.Objet, Desc = d.Description, Status = d.Statut,
+            Date = d.DateCreation.ToLocalTime().ToString("dd/MM/yyyy"),   // le serveur travaille en UTC : conversion en heure locale
+            Hours = d.HeuresRestantes, Est = d.Estimation
+        };
+        foreach (var f in d.PiecesJointes)
+            r.Files.Add((f.Nom, $"{System.IO.Path.GetExtension(f.Nom).TrimStart('.').ToUpper()} · {Taille(f.TailleOctets)}"));
+        // L'historique s'affiche du plus récent au plus ancien.
+        foreach (var e in d.Historique.OrderByDescending(e => e.Date))
+            r.History.Add(new Hist(e.Date.ToLocalTime().ToString("dd/MM HH:mm"), e.Titre, e.Detail));
+        return r;
+    }
+
+    static Msg VersMsg(MsgDto m) => new(m.Auteur, m.Date.ToLocalTime().ToString("dd/MM HH:mm"), m.Texte, m.Lu);
+
+    static string Taille(long octets) => octets >= 1048576 ? $"{octets / 1048576.0:0.0} Mo" : $"{Math.Max(1, octets / 1024)} Ko";
 }
